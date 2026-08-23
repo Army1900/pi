@@ -12,7 +12,7 @@
 - **Maven 3.9.16**:brew 安装因本机 brew tap 陈旧 + bottle 镜像缺失而失败(`load_tab` 报错,清缓存无效),改用 Apache 二进制包直装:`~/tools/apache-maven-3.9.16`
 - **`~/.zshrc`** 已追加:`JAVA_HOME` 指向 openjdk@21,PATH 加入 `$JAVA_HOME/bin` 和 maven bin
 - **`~/.m2/settings.xml`** 已配置阿里云中央仓库镜像(国内拉依赖必需)
-- 已知遗留问题(与本学习项目无关):本机 `brew update` 因 aliyun brew.git 镜像拉取卡死而长期失败;如需修复 brew,可换 `HOMEBREW_BREW_GIT_REMOTE` 或临时直连官方源
+- ~~已知遗留问题:本机 `brew update` 因 aliyun 镜像卡死长期失败~~ **已修复(2026-08-23)**:brew remote 切回官方 GitHub 源,5.1.0 → 6.0.18 追平;阿里云 bottle 镜像因缺新包已在 `~/.zshrc` 停用
 
 ## 日常命令
 
@@ -30,12 +30,22 @@ mvn -q package                        # 打包(暂时用不到)
 - **不用 Spring**:这是学习核心,DI 手写构造函数,保持每条依赖边可见。
 - **刻意保留的 diff**:Java 与 TS 表达力差异导致的取舍(sealed interface 拼 discriminated union 等)是学习目标本身,记进 PLAN.md 的「diff 记录」。
 
-## 结构(按阶段生长)
+## 结构(DDD 四层,按阶段生长)
 
 ```
 src/main/java/dev/myagent/
-├── core/     # 阶段1:消息类型、AgentTool、StreamFn 契约、事件
-├── loop/     # 阶段1-2:runLoop、控制面(steering/followUp/abort/hooks)
-├── mock/     # 测试配套:MockStreamFn、假 Model(对应 pi 的 MockAssistantStream)
-└── journal/  # 阶段3:append-only 记录、replay、恢复、单写者锁
+├── domain/            # 领域层:只依赖 JDK
+│   ├── model/         # 一个聚合 + 词汇 + 公共抽象(契约在 package-info):
+│   │   ├── message/   #   共享词汇:Message、Content、StopReason、Usage
+│   │   ├── tool/      #   工具词汇(领域名词过边界):ToolDescriptor、ToolSchema、AgentToolResult
+│   │   ├── session/   #   聚合根 Session:对话消息(只增)+ [阶段3: entry/lanes/facts/Record(RunId 随记录回归)]
+│   │   └── shared/    #   公共抽象:AggregateRoot(范型主键+事件)、DomainEvent(账本事件标记)
+│   ├── gateway/       #   端口 + 流机制 ✅:StreamFn、AgentTool、AssistantMessageStream
+│   │   └── dto/       #   端口载荷(非领域词汇):Context、Model、StreamEvent
+│   ├── service/       #   AgentLoop/ToolExecutor(功课);词汇:AgentEvent、Result
+│   └── repository/    #   端口:JournalRepository(阶段3,失败契约已立)
+├── application/       # 应用层:只依赖 domain —— Agent 用例门面、事件分发、恢复(阶段2)
+└── infrastructure/    # 基础设施:适配器 —— llm ✅(MockStreamFn)、journal(文件,阶段3)、lease(锁,阶段3)
 ```
+
+依赖铁律:domain 零外部依赖;application 只 import domain;infrastructure 只实现 domain 端口;组装在组合根(测试 setup / Main)手写构造函数。详见 [PLAN.md](./PLAN.md) 的「分层规则」。

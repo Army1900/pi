@@ -15,6 +15,31 @@
 
 铁律:**不逐行翻译**。第 3 步如果发现自己"记得 pi 怎么写",说明退回翻译模式了——回到行为规格(测试)重新问"我会怎么设计"。
 
+## 分层规则(2026-08-23 确立,DDD 四层)
+
+```
+dev.myagent
+├── domain/            # 纯领域:只依赖 JDK(连 Jackson 都不许进)
+│   ├── model/         # 一个聚合 + 词汇 + 公共抽象(契约在 package-info):
+│   │   ├── message/   #   共享词汇:Message、Content、StopReason、Usage(session 持有、gateway 装配、AgentEvent 运载)
+│   │   ├── tool/      #   工具词汇(领域名词过边界,与 message 同等待遇):ToolDescriptor、ToolSchema、AgentToolResult
+│   │   ├── session/   #   聚合根 Session:对话消息(只增)+ [阶段3: entry/lanes/facts/Record(RunId 随记录回归)]
+│   │   └── shared/    #   公共抽象:AggregateRoot(范型主键 + 待发布事件)、DomainEvent(账本事件标记)
+│   ├── gateway/       # 端口 + 流机制:StreamFn、AgentTool、AssistantMessageStream(有行为,是机制不是数据)
+│   │   └── dto/       #   端口载荷(非领域词汇的部分):Context(装配形状)、Model(provider 目录)、StreamEvent(端口方言)
+│   ├── service/       # 领域服务:AgentLoop(Run 概念的执行者,功课)、ToolExecutor、Reducer(阶段3);词汇:AgentEvent、Result
+│   └── repository/    # 仓储端口:JournalRepository(阶段3)
+├── application/       # 只依赖 domain:Agent 用例门面、事件分发、恢复用例
+├── infrastructure/    # 适配器,实现 domain 端口:llm / journal / lease
+└── (share:不建。准入规则:被 ≥2 层需要且不属于任何一层词汇,才建)
+```
+
+- **依赖单向**:infrastructure → domain ← application;domain 零外部依赖。阶段 3 结束用 grep 自查。
+- **端口防泄漏自检**:每个端口方法能否不用 file / JSON / SQL / HTTP 词汇描述?不能 = 端口被污染。
+- **端口失败契约(领域规则,写进接口 Javadoc)**:`StreamFn` 失败=数据(禁止抛)→ 循环不死;`JournalRepository` 磁盘故障=崩溃(允许抛)→ 崩溃边界即在此。哪些失败是数据、哪些是进程死,按端口分。
+- **两种事件勿混**:AgentEvent(观察,不落盘,消费方不能影响执行)vs Record(领域事件,事件溯源素材)。都定义在 domain,发布/分发在 application。
+- **反仪式**:不为唯一实现预埋接口、无第二调用方不建 DTO/mapper;每次抽象在 diff 记录里写理由。
+
 ## 阶段 0:环境验收
 
 - [x] `java -version` 为 21+(21.0.12.1),`mvn -version` 正常(Maven 3.9.16)
@@ -164,15 +189,19 @@
 
 ## pi ↔ myagent 映射总表
 
-| pi | myagent(规划) | 阶段 |
+| pi | myagent(DDD 分层) | 阶段 |
 |---|---|---|
-| `types.ts` Message/AgentTool/StreamFn/AgentEvent | `core/`:`Message`(sealed)、`AgentTool`、`StreamFn`、`AgentEvent` | 1 |
-| `agent-loop.ts` runLoop / streamAssistantResponse | `loop/`:`AgentLoop.run()` | 1 |
-| `agent-loop.ts` 三段式(prepare/execute/finalize) | `loop/`:`ToolExecutor` | 1-2 |
-| `agent.ts` Agent / PendingMessageQueue / processEvents | `loop/`:`Agent`、`PendingMessageQueue` | 2 |
-| `harness/session/` jsonl / state / reducer | `journal/`:`Journal`、`Reducer`、`Recovery` | 3 |
-| `sqlite-node/.../writer-leases.ts` | `journal/`:`WriterLease`(文件锁) | 3 |
-| `test/agent-loop.test.ts` MockAssistantStream | `mock/`:`MockStreamFn` | 1 |
+| `types.ts` + `ai/types.ts` 消息与请求形状 | `domain/model/message`(Message 等)+ `model/tool`(ToolDescriptor、ToolSchema、AgentToolResult —— 领域名词过边界)+ `gateway/dto`(Context、Model)+ `service`(Result)—— 判据:领域词汇留 model,端口方言/装配形状进 dto | 1 ✅ 已初始化 |
+| `types.ts` AgentEvent(:428) | `domain/service`:`AgentEvent`(观察事件;定义与发射在领域服务,分发在 application) | 1 ✅ 已初始化 |
+| `types.ts` AgentTool(:386) | `domain/gateway`:`AgentTool`(能力端口,说领域词汇)+ `model/tool`:`ToolDescriptor`(描述子)—— 描述/能力拆分,pi 焊在一起的 diff | 1 ✅ 已初始化 |
+| `types.ts` StreamFn 契约(:28) | `domain/gateway`:`StreamFn` + `StreamEvent` + `AssistantMessageStream` | 1 ✅ 已初始化 |
+| `agent-loop.ts` runLoop / streamAssistantResponse | `domain/service`:`AgentLoop`(✅ 参考实现,T1/T2 绿;截断全败=T6 功课) | 1 ✅ |
+| `agent-loop.ts` 三段式(prepare/execute/finalize) | `domain/service`:`ToolExecutor` | 1-2 |
+| `agent.ts` Agent / PendingMessageQueue / processEvents | `application`:`Agent` + 事件分发 | 2 |
+| `harness/session/` jsonl / state / reducer | `domain/service`:`Reducer`、`domain/repository`:`JournalRepository`、`infrastructure/journal` 实现 | 3 |
+| `sqlite-node/.../writer-leases.ts` | `infrastructure/lease`(文件锁) | 3 |
+| Axon `AggregateRoot` / Spring `AbstractAggregateRoot`(外部参照,非 pi) | `domain/model/shared`:`AggregateRoot` + `DomainEvent`;`session/Session` 继承(Run 已降级为过程 —— 状态归服务、痕迹归 Session,阶段 3 复审资格)。AgentEvent 刻意不实现 DomainEvent | ✅ 已初始化 |
+| `test/agent-loop.test.ts` MockAssistantStream | `infrastructure/llm`:`MockStreamFn`(假适配器,剧本耗尽守错误契约) | 1 ✅ 已初始化 |
 
 ---
 
@@ -181,7 +210,7 @@
 | 阶段 | 状态 | 完成日期 |
 |---|---|---|
 | 0 环境 | ✅ | 2026-08-23 |
-| 1 最小循环 | ☐ | — |
+| 1 最小循环 | ◐ AgentLoop 参考实现落地,T1/T2 绿(2026-08-23);T3-T6 功课 | — |
 | 2 控制面 | ☐ | — |
 | 3 迷你 harness | ☐ | — |
 
