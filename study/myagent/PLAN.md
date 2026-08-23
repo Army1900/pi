@@ -182,7 +182,7 @@ dev.myagent
 
 ## 范围外(明确不做)
 
-- 真实 provider HTTP 调用(mock 到底;接真 provider 是另一个故事)
+- 真实 provider HTTP 调用(mock 到底;`infrastructure/llm/RealStreamFn` 为编译通过的参考实现,不接线 —— 证明端口契约可被真实 HTTP 流实现)
 - lanes 多通道、compaction、全局 facts(知道概念即可)
 - TUI、MCP、扩展系统
 - 跨进程复制/多写者
