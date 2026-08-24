@@ -40,9 +40,9 @@ import java.util.concurrent.CompletableFuture;
  * baseUrl 从硬编码占位改为构造参数。契约与教学注释见类族:发起即返回(空管道)、
  * 边到边推、失败也是数据(catch Throwable → complete(ERROR))、终态恰好一次。
  *
- * <p>从略(与 Anthropic 适配器同注):tool_call 流式增量拼接、usage、重试限流;
- * 两个适配器刻意各自独立可读,共享骨架(虚拟线程 + SSE 循环)的抽取留作触发器:
- * 第三个 provider 出现时再抽。
+ * <p>从略(与 Anthropic 适配器同注):usage 统计、重试限流;
+ * 工具调用的流式拼装由共享的 {@link ToolCallAssembler} 承担(两家方言归约后的同一件事)。
+ * 两个适配器刻意各自独立可读,SSE/虚拟线程骨架的抽取留作触发器:第三个 provider 出现时再抽。
  */
 public final class OpenAiStreamFn implements StreamFn {
 
@@ -85,6 +85,7 @@ public final class OpenAiStreamFn implements StreamFn {
 		}
 
 		StringBuilder text = new StringBuilder();
+		ToolCallAssembler toolCalls = new ToolCallAssembler();
 		try (BufferedReader reader =
 				new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
 			String line;
@@ -102,12 +103,28 @@ public final class OpenAiStreamFn implements StreamFn {
 					text.append(delta);
 					pipe.push(new StreamEvent.TextDelta(delta));
 				}
+				// 工具调用分片:首片带 id/name,后续只带 arguments 字符串分片,按 index 归位
+				for (JsonNode call : node.path("choices").path(0).path("delta").path("tool_calls")) {
+					int index = call.path("index").asInt(0);
+					JsonNode function = call.path("function");
+					toolCalls.start(index,
+							call.path("id").isTextual() ? call.path("id").asText() : null,
+							function.path("name").isTextual() ? function.path("name").asText() : null);
+					toolCalls.appendArguments(index, function.path("arguments").asText(""));
+				}
 			}
 		}
 
+		// 终态:文本块在前,工具调用块在后(参数解析失败 → IOException → 外层转 ERROR)
+		List<Content> content = new ArrayList<>();
+		if (!text.isEmpty()) {
+			content.add(new Content.TextContent(text.toString()));
+		}
+		content.addAll(toolCalls.finish(json));
+
 		pipe.complete(new AssistantMessage(
 				"openai", "openai", model.id(),
-				text.isEmpty() ? List.of() : List.of(new Content.TextContent(text.toString())),
+				content,
 				Usage.ZERO, StopReason.STOP, Optional.empty(), Instant.now()));
 	}
 

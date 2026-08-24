@@ -48,8 +48,8 @@ import java.util.concurrent.CompletableFuture;
  * </ul>
  *
  * <p>这些差异全部被压在适配器肚子里 —— 领域词汇(Message/ToolCall/ToolResult)到端口为止,
- * 这正是"端口说领域语言、方言归适配器"的完整闭环(与 OpenAiStreamFn 同注:tool_use
- * 流式增量、usage、重试从略;共享骨架第三个 provider 出现时再抽)。
+ * 这正是"端口说领域语言、方言归适配器"的完整闭环。工具参数的流式拼装由共享的
+ * {@link ToolCallAssembler} 承担(两家方言归约后的同一件事);从略的仍是 usage、重试。
  */
 public final class AnthropicStreamFn implements StreamFn {
 
@@ -93,6 +93,7 @@ public final class AnthropicStreamFn implements StreamFn {
 		}
 
 		StringBuilder text = new StringBuilder();
+		ToolCallAssembler toolCalls = new ToolCallAssembler();
 		try (BufferedReader reader =
 				new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
 			String line;
@@ -106,11 +107,24 @@ public final class AnthropicStreamFn implements StreamFn {
 				}
 				JsonNode node = json.readTree(payload);
 				String type = node.path("type").asText("");
-				if (type.equals("content_block_delta") && node.path("delta").path("type").asText("").equals("text_delta")) {
-					String delta = node.path("delta").path("text").asText("");
-					if (!delta.isEmpty()) {
-						text.append(delta);
-						pipe.push(new StreamEvent.TextDelta(delta));
+				int index = node.path("index").asInt(0);
+				if (type.equals("content_block_start")
+						&& node.path("content_block").path("type").asText("").equals("tool_use")) {
+					// 工具调用身份在此一次给全(id/name),参数随后以分片流入
+					JsonNode block = node.path("content_block");
+					toolCalls.start(index,
+							block.path("id").isTextual() ? block.path("id").asText() : null,
+							block.path("name").isTextual() ? block.path("name").asText() : null);
+				} else if (type.equals("content_block_delta")) {
+					String deltaType = node.path("delta").path("type").asText("");
+					if (deltaType.equals("text_delta")) {
+						String delta = node.path("delta").path("text").asText("");
+						if (!delta.isEmpty()) {
+							text.append(delta);
+							pipe.push(new StreamEvent.TextDelta(delta));
+						}
+					} else if (deltaType.equals("input_json_delta")) {
+						toolCalls.appendArguments(index, node.path("delta").path("partial_json").asText(""));
 					}
 				} else if (type.equals("message_stop")) {
 					break;
@@ -120,9 +134,16 @@ public final class AnthropicStreamFn implements StreamFn {
 			}
 		}
 
+		// 终态:文本块在前,工具调用块在后(参数解析失败 → IOException → 外层转 ERROR)
+		List<Content> content = new ArrayList<>();
+		if (!text.isEmpty()) {
+			content.add(new Content.TextContent(text.toString()));
+		}
+		content.addAll(toolCalls.finish(json));
+
 		pipe.complete(new AssistantMessage(
 				"anthropic", "anthropic", model.id(),
-				text.isEmpty() ? List.of() : List.of(new Content.TextContent(text.toString())),
+				content,
 				Usage.ZERO, StopReason.STOP, Optional.empty(), Instant.now()));
 	}
 
