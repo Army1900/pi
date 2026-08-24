@@ -35,3 +35,4 @@
 | 2026-08-22 | [一个 Agent 的最小逻辑](./2026-08-22-agent-minimal-loop.md) | agent-loop 六层拆解:消息 → StreamFn → runLoop → 工具三段式 → 事件/状态 → 最小例子 |
 | 2026-08-22 | [Agent 该用什么语言写?](./2026-08-22-agent-language-layering.md) | 从 TS vs Java 辩论到终局反转:语言问题溶解为分层问题(组装/约束/宿主三层) |
 | 2026-08-23 | [结构是被问出来的](./2026-08-23-myagent-ddd-evolution.md) | myagent 的 DDD 演化全记录:十五轮追问、十条判据、六个死掉的结构 |
+| 2026-08-24 | [让 Agent 活起来](./2026-08-24-myagent-alive.md) | 工具三件套、双方言适配器、分片拼装;三个被测试抓住的 bug 与四条新判据 |
