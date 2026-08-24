@@ -20,6 +20,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -32,42 +33,32 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * <b>参考实现,不接线</b>(PLAN 范围外:学习项目 mock 到底)。没有任何代码引用本类 ——
- * 它的存在意义:① 证明 StreamFn 端口契约可被真实 HTTP 流式适配器实现(编译器背书);
- * ② 作为流式概念的教学实物。
+ * OpenAI 兼容(chat-completions)流式适配器 —— 原 RealStreamFn 参考实现的转正:
+ * baseUrl 从硬编码占位改为构造参数。契约与教学注释见类族:发起即返回(空管道)、
+ * 边到边推、失败也是数据(catch Throwable → complete(ERROR))、终态恰好一次。
  *
- * <p>阅读要点(每一处都对应一条已讨论过的契约):
- * <ul>
- *   <li><b>发起即返回</b>:{@link #stream} 只负责"开始" —— 虚拟线程上跑生成,方法体毫秒级返回,
- *       交出去的管道是<b>空的</b>;</li>
- *   <li><b>边到边推</b>:SSE 每行到达即解析、push —— 消费端 take() 被 push 唤醒,边到边转;</li>
- *   <li><b>失败也是数据</b>:外层 catch Throwable → complete(stopReason=ERROR 的消息),
- *       永不抛 —— 端口失败契约的落点(HTTP 错、断线、解析失败全走同一条路);</li>
- *   <li><b>终态恰好一次</b>:成功/失败都汇聚到 complete,管道随之关闭;</li>
- *   <li><b>翻译的逆过程</b>:toWire 系列把领域词汇(Message/ToolDescriptor)译成 provider 线格式 ——
- *       端口方言住在这里,这正是"领域名词留 model、方言归适配器"的另一半;</li>
- *   <li><b>Jackson/HTTP 只住 infra</b>:domain 对它们一无所知(防泄漏自检的反面:适配器内随便说技术方言)。</li>
- * </ul>
- *
- * <p>刻意从略(阶段 2 的活):abort(线程中断 → 应转 ABORTED 而非 ERROR)、tool_call 流式增量拼接
- * (delta.tool_calls 的分片组装)、usage 统计、重试与限流。线格式以 OpenAI chat-completions 为样。
+ * <p>从略(与 Anthropic 适配器同注):tool_call 流式增量拼接、usage、重试限流;
+ * 两个适配器刻意各自独立可读,共享骨架(虚拟线程 + SSE 循环)的抽取留作触发器:
+ * 第三个 provider 出现时再抽。
  */
-public final class RealStreamFn implements StreamFn {
+public final class OpenAiStreamFn implements StreamFn {
 
 	private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
 	private final ObjectMapper json = new ObjectMapper();
+	private final String baseUrl;
 	private final String apiKey;
 
-	public RealStreamFn(String apiKey) {
+	public OpenAiStreamFn(String baseUrl, String apiKey) {
+		this.baseUrl = baseUrl;
 		this.apiKey = apiKey;
 	}
 
 	@Override
 	public AssistantMessageStream stream(Model model, Context context) {
 		AssistantMessageStream pipe = new AssistantMessageStream();
-		// "等待"被挪出方法体:生成在虚拟线程上进行,方法体只负责发起
 		Thread.ofVirtual().name("llm-stream").start(() -> {
 			try {
 				pump(model, context, pipe);
@@ -75,12 +66,12 @@ public final class RealStreamFn implements StreamFn {
 				pipe.complete(failure(t.getMessage() == null ? t.toString() : t.getMessage()));
 			}
 		});
-		return pipe; // ← 此刻管道是空的,LLM 还没吐出第一个 token
+		return pipe;
 	}
 
 	private void pump(Model model, Context context, AssistantMessageStream pipe) throws Exception {
 		HttpRequest request = HttpRequest.newBuilder()
-				.uri(URI.create("https://api.example.com/v1/chat/completions")) // 实际应取自 Model.baseUrl,此处示意
+				.uri(URI.create(baseUrl + "/chat/completions"))
 				.timeout(Duration.ofMinutes(5))
 				.header("Authorization", "Bearer " + apiKey)
 				.header("Content-Type", "application/json")
@@ -99,19 +90,18 @@ public final class RealStreamFn implements StreamFn {
 			String line;
 			while ((line = reader.readLine()) != null) {
 				if (!line.startsWith("data: ")) {
-					continue; // SSE 注释/心跳
+					continue;
 				}
 				String payload = line.substring("data: ".length());
 				if ("[DONE]".equals(payload.trim())) {
-					break; // 结束哨兵
+					break;
 				}
 				JsonNode node = json.readTree(payload);
 				String delta = node.path("choices").path(0).path("delta").path("content").asText("");
 				if (!delta.isEmpty()) {
 					text.append(delta);
-					pipe.push(new StreamEvent.TextDelta(delta)); // 每个 chunk 到达即直播
+					pipe.push(new StreamEvent.TextDelta(delta));
 				}
-				// delta.tool_calls(分片拼接工具调用)与 usage 同理,形状相同,从略
 			}
 		}
 
@@ -120,8 +110,6 @@ public final class RealStreamFn implements StreamFn {
 				text.isEmpty() ? List.of() : List.of(new Content.TextContent(text.toString())),
 				Usage.ZERO, StopReason.STOP, Optional.empty(), Instant.now()));
 	}
-
-	// ── 领域词汇 → 线格式(装配的逆翻译)──────────────────────────────
 
 	private String buildBody(Model model, Context context) throws IOException {
 		Map<String, Object> body = new LinkedHashMap<>();
@@ -191,7 +179,6 @@ public final class RealStreamFn implements StreamFn {
 		return text.toString();
 	}
 
-	/** 失败终态(与 MockStreamFn.textReply 同形 —— 第二处出现,抽公共工厂的移动触发器已到)。 */
 	private static AssistantMessage failure(String reason) {
 		return new AssistantMessage(
 				"openai", "openai", "unknown",

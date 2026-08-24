@@ -30,7 +30,7 @@ dev.myagent
 │   ├── service/       # 领域服务:AgentLoop(Run 概念的执行者,功课)、ToolExecutor、Reducer(阶段3);词汇:AgentEvent、Result
 │   └── repository/    # 仓储端口:JournalRepository(阶段3)
 ├── application/       # 只依赖 domain:Agent 用例门面、事件分发、恢复用例
-├── infrastructure/    # 适配器,实现 domain 端口:llm / journal / lease
+├── infrastructure/    # 适配器,实现 domain 端口:llm / tools(read、ls、bash —— 本地能力,对面是 OS) / journal / lease
 └── (share:不建。准入规则:被 ≥2 层需要且不属于任何一层词汇,才建)
 ```
 
@@ -182,7 +182,7 @@ dev.myagent
 
 ## 范围外(明确不做)
 
-- 真实 provider HTTP 调用(mock 到底;`infrastructure/llm/RealStreamFn` 为编译通过的参考实现,不接线 —— 证明端口契约可被真实 HTTP 流实现)
+- 真实 provider 的**自动化测试**(主线测试始终零网络、零密钥)。真模型**使用**已接线(2026-08-24 范围修订):`OpenAiStreamFn` + `AnthropicStreamFn`(原 RealStreamFn 参考实现拆分转正)+ `AgentConfig`(env: 密钥卫生)+ `Main`(组合根 REPL,`mvn -q compile exec:java`)
 - lanes 多通道、compaction、全局 facts(知道概念即可)
 - TUI、MCP、扩展系统
 - 跨进程复制/多写者
@@ -201,7 +201,9 @@ dev.myagent
 | `harness/session/` jsonl / state / reducer | `domain/service`:`Reducer`、`domain/repository`:`JournalRepository`、`infrastructure/journal` 实现 | 3 |
 | `sqlite-node/.../writer-leases.ts` | `infrastructure/lease`(文件锁) | 3 |
 | Axon `AggregateRoot` / Spring `AbstractAggregateRoot`(外部参照,非 pi) | `domain/model/shared`:`AggregateRoot` + `DomainEvent`;`session/Session` 继承(Run 已降级为过程 —— 状态归服务、痕迹归 Session,阶段 3 复审资格)。AgentEvent 刻意不实现 DomainEvent | ✅ 已初始化 |
+| pi `core/tools/` read/ls/bash + `truncate.ts` | `infrastructure/tools`:`ReadTool`(截断+content/details 分离)、`LsTool`(默认值+排序)、`BashTool`(读等并发/超时/中断/非零退出走 errors-as-data)+ `ToolArgs`(手写校验,typebox 缺位之痛) | ✅ 已落地(7 测试绿) |
 | `test/agent-loop.test.ts` MockAssistantStream | `infrastructure/llm`:`MockStreamFn`(假适配器,剧本耗尽守错误契约) | 1 ✅ 已初始化 |
+| pi-ai `providers/`(每家一个适配器) | `infrastructure/llm`:`OpenAiStreamFn` + `AnthropicStreamFn`(方言压在适配器内:system 字段/max_tokens/tool_use 块/SSE 形状各异)+ `config/AgentConfig`(env: 密钥卫生)+ 组合根 `Main`(REPL) | ✅ 已接线(2026-08-24) |
 
 ---
 

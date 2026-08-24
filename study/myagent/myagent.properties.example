@@ -1,0 +1,25 @@
+# 复制为 myagent.properties(真实文件已被 .gitignore 排除)
+#
+# 核心概念:api 选的是【接口格式】,不是品牌 ——
+#   openai    = chat-completions 兼容格式(OpenAI/DeepSeek/通义/Kimi/vLLM/one-api 网关…都填这个)
+#   anthropic = Messages API 格式
+# baseUrl 填你的端点(自建网关直填);省略则用官方域名缺省。
+
+# 例一:DeepSeek(OpenAI 兼容格式 + 自定义端点)
+api=openai
+baseUrl=https://api.deepseek.com
+model=deepseek-chat
+apiKey=env:DEEPSEEK_API_KEY
+
+# 例二:Anthropic 官方
+# api=anthropic
+# model=claude-sonnet-4-5
+# apiKey=env:ANTHROPIC_API_KEY
+
+# 例三:OpenAI 官方(baseUrl 可省)
+# api=openai
+# model=gpt-4o-mini
+# apiKey=env:OPENAI_API_KEY
+
+# 可选:最大输出 token(anthropic 格式必传,缺省 4096)
+# maxTokens=8192

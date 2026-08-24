@@ -20,8 +20,18 @@
 mvn test                              # 全部测试
 mvn test -Dtest=AgentLoopTest         # 单个测试类
 mvn test -Dtest='AgentLoopTest#should*'  # 单个方法
-mvn -q package                        # 打包(暂时用不到)
+mvn -q compile exec:java              # 跑 Main(真模型 REPL,见下)
 ```
+
+## 跑起来(真模型)
+
+```bash
+cp myagent.properties.example myagent.properties   # 编辑:api(格式)/baseUrl(端点)/model —— 格式与端点正交
+export DEEPSEEK_API_KEY=sk-...                     # 或 ANTHROPIC/OPENAI_API_KEY;apiKey=env:... 引用它
+mvn -q compile exec:java
+```
+
+配置要点:apiKey 支持 `env:NAME` 引用(密钥不落明文,配置文件无秘密);baseUrl 省略走 provider 默认;单测始终零网络零密钥。
 
 ## 约定
 
@@ -45,7 +55,7 @@ src/main/java/dev/myagent/
 │   ├── service/       #   AgentLoop/ToolExecutor(功课);词汇:AgentEvent、Result
 │   └── repository/    #   端口:JournalRepository(阶段3,失败契约已立)
 ├── application/       # 应用层:只依赖 domain —— Agent 用例门面、事件分发、恢复(阶段2)
-└── infrastructure/    # 基础设施:适配器 —— llm ✅(MockStreamFn)、journal(文件,阶段3)、lease(锁,阶段3)
+└── infrastructure/    # 基础设施:适配器 —— llm ✅(MockStreamFn/RealStreamFn)、tools ✅(read/ls/bash,本地能力)、journal(阶段3)、lease(阶段3)
 ```
 
 依赖铁律:domain 零外部依赖;application 只 import domain;infrastructure 只实现 domain 端口;组装在组合根(测试 setup / Main)手写构造函数。详见 [PLAN.md](./PLAN.md) 的「分层规则」。
